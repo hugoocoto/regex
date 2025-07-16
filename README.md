@@ -18,7 +18,7 @@
 | :--- | :--- |
 | `?` | Matches the preceding element zero or one time |
 | `+` | Matches the preceding element one or more times |
-| `|` | Match either the expression before or the expression after the operator |
+| `\|` | Match either the expression before or the expression after the operator |
 | `\n` | Matches what the nth marked subexpression matched, where n is a digit between 0 and 9 |
 
 ## Why not use `regex.h`?
