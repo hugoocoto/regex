@@ -651,6 +651,8 @@ main()
         test(regex_compile("a$"), "a");
         test(regex_compile("[ab]"), "a");
         test(regex_compile("[ab]"), "b");
+        test(regex_compile("[^ab]"), "c");
+        test(regex_compile("[^ab]"), "d");
         test(regex_compile("a[ab]c"), "abc");
         test(regex_compile("(a)"), "a");
         test(regex_compile("a(a)"), "aa");
@@ -688,5 +690,18 @@ main()
         test(regex_compile("^[A-Za-z0-9._%+-]{1,}@[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}$"), "hugo.coto@rai.usc.es");
         test(regex_compile("^[A-Za-z0-9._%+-]{1,}@[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}$"), "hugocoto100305@gmail.com");
         test(regex_compile("^[A-Za-z0-9._%+-]{1,}@[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}$"), "hugocoto100305+1@gmail.com");
+        // wikipedia examples
+        test(regex_compile(".at"), "hat");
+        test(regex_compile(".at"), "cat");
+        test(regex_compile(".at"), "bat");
+        test(regex_compile(".at"), "4at");
+        test(regex_compile(".at"), "#at");
+        test(regex_compile(".at"), " at");
+        test(regex_compile("[hc]at"), "hat");
+        test(regex_compile("[hc]at"), "cat");
+        test(regex_compile("[^b]at"), "cat");
+        test(regex_compile("[^bc]at"), "hat");
+        test(regex_compile("\\[.\\]"), "[a]");
+        test(regex_compile("s.*"), "saw");
         return 0;
 }
