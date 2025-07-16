@@ -55,7 +55,7 @@ typedef struct Regex {
 #define todo(...)                                                                            \
         do {                                                                                 \
                 printf("No yet implemented: %s at " __FILE__ ":%d", __FUNCTION__, __LINE__); \
-                __VA_OPT__(printf(__VA_ARGS__);)                                             \
+                __VA_OPT__(printf(": "__VA_ARGS__);)                                         \
                 puts("");                                                                    \
                 exit(0);                                                                     \
         } while (0)
@@ -326,7 +326,7 @@ get_literal(char **c)
 void
 merge_literals(RegexTok *t)
 {
-        while (t && t->next) {
+        while (t) {
                 switch (t->type) {
                 case BRACKET_EXPR:
                 case BRACKET_EXPR_EXCL:
@@ -351,6 +351,8 @@ merge_literals(RegexTok *t)
                         todo("case for %s", TOKREPR[t->type]);
                 }
 
+                if (t->next == NULL) break;
+
                 if (t->type != LITERAL || t->next->type != LITERAL) {
                         t = t->next;
                         continue;
@@ -360,6 +362,24 @@ merge_literals(RegexTok *t)
                 strcat(t->lexeme, t->next->lexeme);
                 free(t->next->lexeme);
                 t->next = t->next->next;
+        }
+}
+
+void
+swap_operators(RegexTok **first)
+{
+        /* swap .* to * -> . */
+        RegexTok **t = first;
+        while (*t && (*t)->next) {
+                if ((*t)->next->type == MATCH_ZERO_MORE) {
+                        (*t)->next->match_zero_more.match = *t;
+                        *t = (*t)->next;
+                }
+                if ((*t)->next->type == MATCH_RANGE) {
+                        (*t)->next->match_range.match = *t;
+                        *t = (*t)->next;
+                }
+                t = &(*t)->next;
         }
 }
 
@@ -375,11 +395,12 @@ get_tokens(char *expr)
         }
         last = t->next;
         merge_literals(last);
+        swap_operators(&last);
         free(t);
         return last;
 };
 
-#define INDENT 2
+#define INDENT 4
 void
 print_token_ast_branch(RegexTok *r, int indent)
 {
@@ -413,6 +434,7 @@ print_token_ast_branch(RegexTok *r, int indent)
                 break;
         case MATCH_ZERO_MORE:
                 printf("- Match Zero or More `*`\n");
+                print_token_ast_branch(r->match_zero_more.match, indent + INDENT);
                 break;
         case MATCH_RANGE:
                 printf("- Match Range `{` ... `}`\n");
@@ -445,10 +467,56 @@ regex_compile(char *expr)
 }
 
 bool
+char_in_str(char c, char *str)
+{
+        return !(strchr(str, c) == NULL);
+}
+
+static bool
+eval(RegexTok *t, char *str, int offset)
+{
+        if (offset >= strlen(str)) return t == NULL;
+
+        switch (t->type) {
+        case START_OF_LINE:
+                return offset == 0 ? eval(t->next, str, 0) : false;
+        case END_OF_LINE:
+                return !str[offset];
+        case ANY_CHAR:
+                return eval(t->next, str, offset + 1);
+        case LITERAL:
+                return memcmp(str + offset, t->lexeme, strlen(t->lexeme)) == 0 ?
+                       eval(t->next, str, offset + strlen(t->lexeme)) :
+                       false;
+        case BRACKET_EXPR:
+                return char_in_str(str[offset], t->bracket_expr.body->lexeme) ?
+                       eval(t->next, str, offset + 1) :
+                       false;
+        case BRACKET_EXPR_EXCL:
+                return !char_in_str(str[offset], t->bracket_expr.body->lexeme) ?
+                       eval(t->next, str, offset + 1) :
+                       false;
+        case GROUP:
+        case MATCH_ZERO_MORE:
+        case MATCH_RANGE:
+        case MATCH_GROUP: // logic for this not implemented
+        default:
+                todo("case for %s", TOKREPR[t->type]);
+        }
+}
+
+bool
 regex_match(Regex expr, char *str)
 {
+        int o = 0;
         if (expr.tokens == NULL) return false;
-        return true;
+        if (expr.tokens->type == START_OF_LINE)
+                return eval(expr.tokens, str, 0);
+        while (str[o]) {
+                if (eval(expr.tokens, str, o)) return true;
+                ++o;
+        }
+        return false;
 }
 
 char *
@@ -470,12 +538,16 @@ int
 main()
 {
         Regex expr;
-        expr = regex_compile("^[A-Za-z0-9._%+-]{1,}@[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}$");
+        // expr = regex_compile("^[A-Za-z0-9._%+-]{1,}@[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}$");
         // expr = regex_compile("^https?://[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}(/[A-Za-z0-9._~!$&'()*+,;=:@%-]*)*\\/?$");
         // expr = regex_compile("^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$");
         // expr = regex_compile("^[-+]?[0-9]+(\\.[0-9]+)?$");
         // expr = regex_compile("^([0-9]{1,3}\\.){3}[0-9]{1,3}$");
         // expr = regex_compile("^[A-Za-z0-9!@#$%^&*()_+\\-=\[\\]{};':\"\\\\|,.<>\\/?]{8,}$");
-        match_report(expr, "hugocoto100305@gmail.com");
+        // match_report(expr, "hugocoto100305@gmail.com");
+        expr = regex_compile("a[ab]");
+        match_report(expr, "aa");
+        match_report(expr, "ab");
+        match_report(expr, "ac");
         return 0;
 }

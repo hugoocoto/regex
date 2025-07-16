@@ -1,2 +1,2 @@
 all:
-	gcc *.c -Wall -Wextra -Wno-unused-parameter
+	gcc *.c -Wall -Wextra -Wno-unused-parameter -ggdb
