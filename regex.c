@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +33,19 @@ typedef struct RegexTok {
         struct RegexTok *next;
 } RegexTok;
 /* clang-format on */
+
+const char *TOKREPR[] = {
+        [START_OF_LINE] = "START_OF_LINE",
+        [END_OF_LINE] = "END_OF_LINE",
+        [ANY_CHAR] = "ANY_CHAR",
+        [BRACKET_EXPR] = "BRACKET_EXPR",
+        [BRACKET_EXPR_EXCL] = "BRACKET_EXPR_EXCL",
+        [GROUP] = "GROUP",
+        [MATCH_GROUP] = "MATCH_GROUP",
+        [MATCH_ZERO_MORE] = "MATCH_ZERO_MORE",
+        [MATCH_RANGE] = "MATCH_RANGE",
+        [LITERAL] = "LITERAL",
+};
 
 typedef struct Regex {
         char *repr;
@@ -101,11 +115,10 @@ new_bracket_expr_excl()
 }
 
 RegexTok *
-new_group(RegexTok *body)
+new_group()
 {
         RegexTok *tok = new_regextok();
         tok->type = GROUP;
-        tok->group.body = body;
         tok->group.id = 0; // TODO
         return tok;
 }
@@ -136,10 +149,14 @@ new_match_range()
 }
 
 RegexTok *
-new_literal()
+new_literal(char *lit)
 {
         RegexTok *tok = new_regextok();
         tok->type = LITERAL;
+        assert(tok->lexeme == NULL);
+        /* for now it only accept a single char */
+        tok->lexeme = strdup(" ");
+        tok->lexeme[0] = *lit;
         return tok;
 }
 
@@ -165,7 +182,7 @@ match(char **c, char *word)
 {
         int len = strlen(word);
         if (len == 0) return **c == 0; // for test that *c == ""
-        if (memcmp(word, *c, len)) {
+        if (memcmp(word, *c, len) == 0) {
                 *c += len;
                 return true;
         }
@@ -173,7 +190,7 @@ match(char **c, char *word)
 }
 
 void
-consume_expect(char **c, char *word)
+expect_consume(char **c, char *word)
 {
         if (match(c, word)) return;
         fprintf(stderr, "Expected `%s` but got `%-*s`\n",
@@ -196,8 +213,12 @@ RegexTok *
 get_group(char **c)
 {
         if (match(c, "(")) {
-                RegexTok *t = new_group(get_group(c));
-                consume_expect(c, ")");
+                RegexTok *t = new_group();
+                RegexTok **last = &t->group.body;
+                while (!match(c, ")")) {
+                        *last = get_group(c);
+                        last = &(*last)->next;
+                }
                 return t;
         }
         return get_start_of_line(c);
@@ -217,7 +238,7 @@ get_end_of_line(char **c)
 {
         if (match(c, "$")) {
                 RegexTok *t = new_end_of_line();
-                consume_expect(c, "");
+                expect_consume(c, "");
                 return t;
         }
         return get_any_char(c);
@@ -237,7 +258,12 @@ get_bracket_expr_excl(char **c)
 {
         if (match(c, "[^")) {
                 RegexTok *t = new_bracket_expr_excl();
-                consume_expect(c, "]");
+                RegexTok **last = &t->bracket_expr.body;
+                while (!match(c, "]")) {
+                        if (**c == '\\') ++*c;
+                        *last = get_literal(c);
+                        last = &(*last)->next;
+                }
                 return t;
         }
         return get_bracket_expr(c);
@@ -248,7 +274,12 @@ get_bracket_expr(char **c)
 {
         if (match(c, "[")) {
                 RegexTok *t = new_bracket_expr();
-                consume_expect(c, "]");
+                RegexTok **last = &t->bracket_expr.body;
+                while (!match(c, "]")) {
+                        if (**c == '\\') ++*c;
+                        *last = get_literal(c);
+                        last = &(*last)->next;
+                }
                 return t;
         }
         return get_match_group(c);
@@ -276,7 +307,11 @@ get_match_range(char **c)
 {
         if (match(c, "{")) {
                 RegexTok *t = new_match_range();
-                consume_expect(c, "]");
+                RegexTok **last = &t->match_range.match;
+                while (!match(c, "}")) {
+                        *last = get_literal(c);
+                        last = &(*last)->next;
+                }
                 return t;
         }
         return get_literal(c);
@@ -285,20 +320,119 @@ get_match_range(char **c)
 RegexTok *
 get_literal(char **c)
 {
-        return NULL; // todo
+        return new_literal((*c)++);
 };
+
+void
+merge_literals(RegexTok *t)
+{
+        while (t && t->next) {
+                switch (t->type) {
+                case BRACKET_EXPR:
+                case BRACKET_EXPR_EXCL:
+                        merge_literals(t->bracket_expr.body);
+                        break;
+                case MATCH_RANGE:
+                        merge_literals(t->match_range.match);
+                        break;
+                case MATCH_GROUP:
+                        merge_literals(t->match_group.group);
+                        break;
+                case GROUP:
+                        merge_literals(t->group.body);
+                        break;
+                case START_OF_LINE:
+                case END_OF_LINE:
+                case ANY_CHAR:
+                case MATCH_ZERO_MORE:
+                case LITERAL:
+                        break;
+                default:
+                        todo("case for %s", TOKREPR[t->type]);
+                }
+
+                if (t->type != LITERAL || t->next->type != LITERAL) {
+                        t = t->next;
+                        continue;
+                }
+
+                t->lexeme = realloc(t->lexeme, strlen(t->lexeme) + strlen(t->next->lexeme) + 1);
+                strcat(t->lexeme, t->next->lexeme);
+                free(t->next->lexeme);
+                t->next = t->next->next;
+        }
+}
 
 RegexTok *
 get_tokens(char *expr)
 {
-        RegexTok *t = NULL;
+        RegexTok *t = new_regextok();
         RegexTok *last = t;
-        while (*expr) {
-                last = get_group(&expr);
+        char **cur = &expr;
+        while (**cur) {
+                last->next = get_group(cur);
                 last = last->next;
         }
-        return t;
+        last = t->next;
+        merge_literals(last);
+        free(t);
+        return last;
 };
+
+#define INDENT 2
+void
+print_token_ast_branch(RegexTok *r, int indent)
+{
+        printf("%*s", indent, ""); // indentation
+        switch (r->type) {
+        case START_OF_LINE:
+                printf("- Start of line `^`\n");
+                break;
+        case END_OF_LINE:
+                printf("- End of line `$`\n");
+                break;
+        case ANY_CHAR:
+                printf("- Any Char `.`\n");
+                break;
+        case BRACKET_EXPR:
+                printf("- Bracket expression `[` ... `]`\n");
+                for (RegexTok *t = r->bracket_expr.body; t; t = t->next)
+                        print_token_ast_branch(t, indent + INDENT);
+                break;
+        case BRACKET_EXPR_EXCL:
+                printf("- Bracket expression exclude `[^` ... `]`\n");
+                for (RegexTok *t = r->bracket_expr.body; t; t = t->next)
+                        print_token_ast_branch(t, indent + INDENT);
+                break;
+        case GROUP:
+                printf("- Group `(` ... `)`\n");
+                print_token_ast_branch(r->group.body, indent + INDENT);
+                break;
+        case MATCH_GROUP:
+                printf("- Match Group `%d` <- TODO `\\%%d`\n", 0); // TODO
+                break;
+        case MATCH_ZERO_MORE:
+                printf("- Match Zero or More `*`\n");
+                break;
+        case MATCH_RANGE:
+                printf("- Match Range `{` ... `}`\n");
+                print_token_ast_branch(r->match_range.match, indent + INDENT);
+                break;
+        case LITERAL:
+                printf("- Literal `%s`\n", r->lexeme);
+                break;
+        default:
+                todo("case for %s", TOKREPR[r->type]);
+        }
+}
+
+void
+print_token_ast(Regex r)
+{
+        RegexTok *t;
+        for (t = r.tokens; t; t = t->next)
+                print_token_ast_branch(t, 0);
+}
 
 Regex
 regex_compile(char *expr)
@@ -306,6 +440,7 @@ regex_compile(char *expr)
         Regex r;
         r.repr = strdup(expr);
         r.tokens = get_tokens(expr);
+        print_token_ast(r);
         return r;
 }
 
@@ -334,8 +469,13 @@ match_report(Regex regex, char *str)
 int
 main()
 {
-        todo();
-        Regex expr = regex_compile("H*");
-        match_report(expr, "Hello");
+        Regex expr;
+        expr = regex_compile("^[A-Za-z0-9._%+-]{1,}@[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}$");
+        // expr = regex_compile("^https?://[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}(/[A-Za-z0-9._~!$&'()*+,;=:@%-]*)*\\/?$");
+        // expr = regex_compile("^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$");
+        // expr = regex_compile("^[-+]?[0-9]+(\\.[0-9]+)?$");
+        // expr = regex_compile("^([0-9]{1,3}\\.){3}[0-9]{1,3}$");
+        // expr = regex_compile("^[A-Za-z0-9!@#$%^&*()_+\\-=\[\\]{};':\"\\\\|,.<>\\/?]{8,}$");
+        match_report(expr, "hugocoto100305@gmail.com");
         return 0;
 }
