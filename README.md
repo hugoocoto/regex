@@ -10,10 +10,12 @@
 | `$` | Matches the ending position of the string |
 | `( )` | Defines a marked subexpression |
 | `*` | Matches the preceding element zero or more times |
-| `{_m_, _n_}` | Matches the preceding element at least _m_ and not more than _n_ times. |
+| `{m, n}` | Matches the preceding element at least _m_ and not more than _n_ times. |
 
 # No yet implemented 
 
+| Metacharacter | Description |
+| :--- | :--- |
 | `?` | Matches the preceding element zero or one time |
 | `+` | Matches the preceding element one or more times |
 | `|` | Match either the expression before or the expression after the operator |
