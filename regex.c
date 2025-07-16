@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define PRINT_AST 0
+
 /* clang-format off */
 typedef struct RegexTok {
         enum {
@@ -26,7 +28,7 @@ typedef struct RegexTok {
                 struct { struct RegexTok *body; int id; } group;
                 struct { struct RegexTok *group; } match_group;
                 struct { struct RegexTok *match; } match_zero_more;
-                struct { struct RegexTok *match; } match_range;
+                struct { struct RegexTok *match; struct RegexTok*range;} match_range;
                 struct { char*literal; } literal;
         };
         char *lexeme;
@@ -288,8 +290,9 @@ get_bracket_expr(char **c)
 RegexTok *
 get_match_group(char **c)
 {
-        if (match(c, "\\") && ('1' <= **c && **c <= '9'))
+        if (match(c, "\\") && ('1' <= **c && **c <= '9')) {
                 return new_match_group(*((*c)++));
+        }
         return get_match_zero_more(c);
 };
 
@@ -307,7 +310,7 @@ get_match_range(char **c)
 {
         if (match(c, "{")) {
                 RegexTok *t = new_match_range();
-                RegexTok **last = &t->match_range.match;
+                RegexTok **last = &t->match_range.range;
                 while (!match(c, "}")) {
                         *last = get_literal(c);
                         last = &(*last)->next;
@@ -374,10 +377,11 @@ swap_operators(RegexTok **first)
                 if ((*t)->next->type == MATCH_ZERO_MORE) {
                         (*t)->next->match_zero_more.match = *t;
                         *t = (*t)->next;
-                }
-                if ((*t)->next->type == MATCH_RANGE) {
+                        (*t)->match_zero_more.match->next = NULL;
+                } else if ((*t)->next->type == MATCH_RANGE) {
                         (*t)->next->match_range.match = *t;
                         *t = (*t)->next;
+                        (*t)->match_range.match->next = NULL;
                 }
                 t = &(*t)->next;
         }
@@ -404,6 +408,7 @@ get_tokens(char *expr)
 void
 print_token_ast_branch(RegexTok *r, int indent)
 {
+        if (r == NULL) return;
         printf("%*s", indent, ""); // indentation
         switch (r->type) {
         case START_OF_LINE:
@@ -437,8 +442,9 @@ print_token_ast_branch(RegexTok *r, int indent)
                 print_token_ast_branch(r->match_zero_more.match, indent + INDENT);
                 break;
         case MATCH_RANGE:
-                printf("- Match Range `{` ... `}`\n");
+                printf("- Match Range `{` a , b `}`\n");
                 print_token_ast_branch(r->match_range.match, indent + INDENT);
+                print_token_ast_branch(r->match_range.range, indent + INDENT);
                 break;
         case LITERAL:
                 printf("- Literal `%s`\n", r->lexeme);
@@ -452,6 +458,7 @@ void
 print_token_ast(Regex r)
 {
         RegexTok *t;
+        printf("Expr: `%s`\n", r.repr);
         for (t = r.tokens; t; t = t->next)
                 print_token_ast_branch(t, 0);
 }
@@ -462,43 +469,139 @@ regex_compile(char *expr)
         Regex r;
         r.repr = strdup(expr);
         r.tokens = get_tokens(expr);
+#if defined(PRINT_AST) && PRINT_AST
         print_token_ast(r);
+#endif
         return r;
 }
 
 bool
-char_in_str(char c, char *str)
+char_in_str(char chr, char *str)
 {
-        return !(strchr(str, c) == NULL);
+        if (strchr(str, chr) == NULL) {
+                // check ranges
+                char *c = str;
+                while ((c = strchr(c, '-')) && c != str && c[1]) {
+                        if (c[-1] <= chr && chr <= c[1]) return true;
+                        ++c;
+                }
+                return false;
+        }
+        return true;
 }
 
-static bool
-eval(RegexTok *t, char *str, int offset)
+bool
+eval(RegexTok *t, char *str, int offset, int *result)
 {
-        if (offset >= strlen(str)) return t == NULL;
+        if (result) *result = 0;
+        if (t == NULL || offset > strlen(str)) return t == NULL;
 
         switch (t->type) {
         case START_OF_LINE:
-                return offset == 0 ? eval(t->next, str, 0) : false;
+                if (offset == 0) {
+                        return eval(t->next, str, 0, NULL);
+                } else {
+                        return 0;
+                }
         case END_OF_LINE:
                 return !str[offset];
         case ANY_CHAR:
-                return eval(t->next, str, offset + 1);
+                if (eval(t->next, str, offset + 1, NULL)) {
+                        if (result) *result = 1;
+                        return true;
+                } else {
+                        return false;
+                }
         case LITERAL:
-                return memcmp(str + offset, t->lexeme, strlen(t->lexeme)) == 0 ?
-                       eval(t->next, str, offset + strlen(t->lexeme)) :
-                       false;
+                if (memcmp(str + offset, t->lexeme, strlen(t->lexeme)) == 0) {
+                        if (eval(t->next, str, offset + strlen(t->lexeme), NULL)) {
+                                if (result) *result = strlen(t->lexeme);
+                                return true;
+                        } else {
+                                return false;
+                        }
+                } else {
+                        return false;
+                }
         case BRACKET_EXPR:
-                return char_in_str(str[offset], t->bracket_expr.body->lexeme) ?
-                       eval(t->next, str, offset + 1) :
-                       false;
+                if (char_in_str(str[offset], t->bracket_expr.body->lexeme)) {
+                        bool ret = eval(t->next, str, offset + 1, NULL);
+                        if (result) *result = ret ? 1 : 0;
+                        return ret;
+                } else {
+                        return false;
+                }
         case BRACKET_EXPR_EXCL:
-                return !char_in_str(str[offset], t->bracket_expr.body->lexeme) ?
-                       eval(t->next, str, offset + 1) :
-                       false;
-        case GROUP:
-        case MATCH_ZERO_MORE:
-        case MATCH_RANGE:
+                if (!char_in_str(str[offset], t->bracket_expr.body->lexeme)) {
+                        bool ret = eval(t->next, str, offset + 1, NULL);
+                        if (result) *result = ret ? 1 : 0;
+                        return ret;
+                } else {
+                        return 0;
+                }
+        case GROUP: {
+                int n;
+                if (eval(t->group.body, str, offset, &n)) {
+                        if (eval(t->next, str, offset + n, NULL)) {
+                                if (result) *result = n;
+                                return true;
+                        }
+                        return false;
+                }
+                return false;
+        }
+        case MATCH_ZERO_MORE: {
+                int ret = 0;
+                int max = 999;
+                int n;
+                while (1) {
+                        ret = 0;
+                        for (int i = 0; i < max; i++) {
+                                if (!eval(t->match_zero_more.match, str, offset + ret, &n)) {
+                                        max = i;
+                                        break;
+                                }
+                                ret += n;
+                        }
+
+                        if (eval(t->next, str, offset + ret, NULL)) {
+                                if (result) *result = ret;
+                                return true;
+                        }
+                        max--;
+                        if (max < 0) return false;
+                }
+        }
+        case MATCH_RANGE: {
+                int ret = 0;
+                char *start = t->match_range.range->lexeme;
+                char *c;
+                int max = 999;
+                if ((c = strchr(start, ','))) {
+                        *c = 0;
+                        max = atoi(c + 1);
+                }
+                int min = atoi(start);
+                int n;
+                while (1) {
+                        ret = 0;
+                        for (int i = 0; i < max; i++) {
+                                if (!eval(t->match_range.match, str, offset + ret, &n)) {
+                                        max = i;
+                                        break;
+                                }
+                                ret += n;
+                        }
+
+                        if (eval(t->next, str, offset + ret, NULL)) {
+                                if (result) *result = ret;
+                                return true;
+                        }
+                        max--;
+                        if (max < min) return false;
+                }
+        }
+
         case MATCH_GROUP: // logic for this not implemented
         default:
                 todo("case for %s", TOKREPR[t->type]);
@@ -511,11 +614,11 @@ regex_match(Regex expr, char *str)
         int o = 0;
         if (expr.tokens == NULL) return false;
         if (expr.tokens->type == START_OF_LINE)
-                return eval(expr.tokens, str, 0);
-        while (str[o]) {
-                if (eval(expr.tokens, str, o)) return true;
+                return eval(expr.tokens, str, 0, 0);
+        do {
+                if (eval(expr.tokens, str, o, 0)) return true;
                 ++o;
-        }
+        } while (str[o]);
         return false;
 }
 
@@ -526,28 +629,64 @@ regex_repr(Regex expr)
 }
 
 void
-match_report(Regex regex, char *str)
+test(Regex regex, char *str)
 {
-        if (regex_match(regex, str)) {
-                printf("Match: %s (regex: `%s`)\n", str, regex_repr(regex));
-        } else
-                printf("No Match: %s (regex: `%s`)\n", str, regex_repr(regex));
+        static int done = 0;
+        static int passed = 0;
+        done++;
+        if (!regex_match(regex, str)) {
+                printf("Test [%d/%d] Fail: \"%s\" don't match regex \"%s\"\n", done, passed, str, regex_repr(regex));
+        } else {
+                passed++;
+                printf("Test [%d/%d] Ok\n", done, passed);
+        }
 }
 
 int
 main()
 {
-        Regex expr;
-        // expr = regex_compile("^[A-Za-z0-9._%+-]{1,}@[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}$");
-        // expr = regex_compile("^https?://[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}(/[A-Za-z0-9._~!$&'()*+,;=:@%-]*)*\\/?$");
-        // expr = regex_compile("^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$");
-        // expr = regex_compile("^[-+]?[0-9]+(\\.[0-9]+)?$");
-        // expr = regex_compile("^([0-9]{1,3}\\.){3}[0-9]{1,3}$");
-        // expr = regex_compile("^[A-Za-z0-9!@#$%^&*()_+\\-=\[\\]{};':\"\\\\|,.<>\\/?]{8,}$");
-        // match_report(expr, "hugocoto100305@gmail.com");
-        expr = regex_compile("a[ab]");
-        match_report(expr, "aa");
-        match_report(expr, "ab");
-        match_report(expr, "ac");
+        test(regex_compile("a"), "a");
+        test(regex_compile("^a"), "a");
+        test(regex_compile("^$"), "");
+        test(regex_compile("a$"), "a");
+        test(regex_compile("[ab]"), "a");
+        test(regex_compile("[ab]"), "b");
+        test(regex_compile("a[ab]c"), "abc");
+        test(regex_compile("(a)"), "a");
+        test(regex_compile("a(a)"), "aa");
+        test(regex_compile("a(a)b"), "aab");
+        test(regex_compile("."), "a");
+        test(regex_compile("a."), "ab");
+        test(regex_compile(".a"), "ba");
+        test(regex_compile("^a*$"), "a");
+        test(regex_compile("a*$"), "a");
+        test(regex_compile("^a*"), "a");
+        test(regex_compile("a*"), "a");
+        test(regex_compile("a*"), "aaaaaa");
+        test(regex_compile("a*"), "");
+        test(regex_compile("a{0,}"), "");
+        test(regex_compile("a[ab]*c"), "abc");
+        test(regex_compile("a[ab]*c"), "aabbc");
+        test(regex_compile("a[ab]*c"), "ac");
+        test(regex_compile("a[bc]*d$"), "abcbcd");
+        test(regex_compile("a**[bc]*d$"), "abd");
+        test(regex_compile("a([bc])***d$"), "ad"); 
+        test(regex_compile("a[bc]*d$"), "abbbbbbbd");
+        test(regex_compile("a[bc\\]]"), "a]");
+        test(regex_compile("a{1,2}"), "a");
+        test(regex_compile("a{1,2}"), "aa");
+        test(regex_compile("a{,2}"), "aa");
+        test(regex_compile("a{,2}"), "a");
+        test(regex_compile("a{,2}"), "");
+        test(regex_compile("a{1,}"), "a");
+        test(regex_compile("a{1,}"), "aaa");
+        test(regex_compile("[a-z]"), "b");
+        test(regex_compile("[a-z]"), "a");
+        test(regex_compile("[a-z]"), "z");
+        test(regex_compile("[0-9]"), "3");
+        test(regex_compile("[A-Za-z0-9._%+-]"), "3");
+        test(regex_compile("^[A-Za-z0-9._%+-]{1,}@[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}$"), "hugo.coto@rai.usc.es");
+        test(regex_compile("^[A-Za-z0-9._%+-]{1,}@[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}$"), "hugocoto100305@gmail.com");
+        test(regex_compile("^[A-Za-z0-9._%+-]{1,}@[A-Za-z0-9.-]{1,}\\.[A-Za-z]{2,}$"), "hugocoto100305+1@gmail.com");
         return 0;
 }
