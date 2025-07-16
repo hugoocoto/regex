@@ -1,6 +1,6 @@
 # Regular Expression Lib
 
-# Implemented subset
+## Implemented subset
 
 | Metacharacter | Description |
 | :--- | :--- |
@@ -12,7 +12,7 @@
 | `*` | Matches the preceding element zero or more times |
 | `{m, n}` | Matches the preceding element at least _m_ and not more than _n_ times. |
 
-# No yet implemented 
+## No yet implemented 
 
 | Metacharacter | Description |
 | :--- | :--- |
