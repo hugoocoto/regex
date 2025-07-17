@@ -2,7 +2,7 @@
 
 ## About
 
-Regular expression subset - poorly performing implementation.
+Poorly performing implementation of a regular expression subset.
 
 ## Implemented subset
 
